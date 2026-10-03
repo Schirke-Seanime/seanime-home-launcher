@@ -119,20 +119,39 @@ render([]);
       }
     }
 
-    function found(links: any[]) {
-      update(links)
+    const SELECTOR = 'a[href*="/webview?id="]'
+
+    // The tiles are always rebuilt from all the sidebar's plugin links. The
+    // observer only reports the links that were added or changed (opening a
+    // plugin page changes just its own link), so it's only a cue to ask for
+    // the full set; cues close together make one request.
+    let refreshing = false
+    function refresh() {
+      if (refreshing) return
+      refreshing = true
+      ctx.setTimeout(() => {
+        ctx.dom.query(SELECTOR).then((links: any[]) => {
+          refreshing = false
+          if (!links) return
+          hide(links)
+          update(links)
+        }, () => { refreshing = false })
+      }, 250)
+    }
+
+    function changed(links: any[]) {
       hide(links)
+      refresh()
     }
 
     // The sidebar can be ready before this handler is listening for "ready",
     // so the observer starts right away too, again on "ready" and whenever
     // this tab becomes the main one, and the sidebar is asked directly every
     // couple of seconds until the first links turn up.
-    const SELECTOR = 'a[href*="/webview?id="]'
     let stopObserving: any = null
     function watch() {
       try { if (stopObserving) stopObserving() } catch (e) { /* gone */ }
-      const r: any = ctx.dom.observe(SELECTOR, found)
+      const r: any = ctx.dom.observe(SELECTOR, changed)
       stopObserving = r && r[0]
     }
     ctx.dom.onReady(watch)
@@ -142,8 +161,10 @@ render([]);
     const stopAsking = ctx.setInterval(() => {
       const have = tiles.get()
       if ((have && have.length) || ++tries > 15) { stopAsking(); return }
-      ctx.dom.query(SELECTOR).then((links: any[]) => { if (links && links.length) found(links) })
+      refresh()
     }, 2000)
+    // Back on the home screen: recount, so a removed plugin's tile goes too.
+    page.onMount(() => refresh())
 
   })
 }
