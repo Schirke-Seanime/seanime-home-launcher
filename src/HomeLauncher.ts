@@ -6,6 +6,7 @@
 // plugin page in the sidebar (Anime Diary, Season Guide, ...), so they're a
 // click away from home. There's no API listing installed plugins, so it
 // watches the sidebar's links to plugin pages: tiles come and go with them.
+// Those links are then hidden from the sidebar, since the tiles replace them.
 
 function init() {
   $ui.register((ctx) => {
@@ -92,7 +93,8 @@ render([]);
         const href = String((a && a.attributes && a.attributes.href) || "")
         const m = /[?&]id=([^&#]+)/.exec(href)
         if (!m) continue
-        const id = decodeURIComponent(m[1])
+        // The router may write search values JSON-style: id=%22anime-diary%22.
+        const id = decodeURIComponent(m[1]).replace(/^"|"$/g, "")
         if (seen[id]) continue
         seen[id] = true
         const k = KNOWN[id]
@@ -106,9 +108,42 @@ render([]);
       tiles.set(out)
     }
 
-    ctx.dom.onReady(() => {
-      ctx.dom.observe('a[href*="/webview?id="]', (links) => update(links))
-    })
+    // The launcher stands in for the plugins' sidebar links, so they're
+    // hidden. Only the link itself is styled, and only once, so hiding it
+    // doesn't set off the observer again and again.
+    function hide(links: any[]) {
+      for (const a of (links || [])) {
+        const style = String((a && a.attributes && a.attributes.style) || "")
+        if (/display:\s*none/.test(style)) continue
+        try { a.setStyle("display", "none") } catch (e) { console.error("Home Launcher: hide: " + e) }
+      }
+    }
+
+    function found(links: any[]) {
+      update(links)
+      hide(links)
+    }
+
+    // The sidebar can be ready before this handler is listening for "ready",
+    // so the observer starts right away too, again on "ready" and whenever
+    // this tab becomes the main one, and the sidebar is asked directly every
+    // couple of seconds until the first links turn up.
+    const SELECTOR = 'a[href*="/webview?id="]'
+    let stopObserving: any = null
+    function watch() {
+      try { if (stopObserving) stopObserving() } catch (e) { /* gone */ }
+      const r: any = ctx.dom.observe(SELECTOR, found)
+      stopObserving = r && r[0]
+    }
+    ctx.dom.onReady(watch)
+    ctx.dom.onMainTabReady(watch)
+    watch()
+    let tries = 0
+    const stopAsking = ctx.setInterval(() => {
+      const have = tiles.get()
+      if ((have && have.length) || ++tries > 15) { stopAsking(); return }
+      ctx.dom.query(SELECTOR).then((links: any[]) => { if (links && links.length) found(links) })
+    }, 2000)
 
   })
 }
