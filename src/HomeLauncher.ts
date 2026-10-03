@@ -12,7 +12,7 @@ function init() {
   $ui.register((ctx) => {
     // The tiles for plugins with a known look; any other plugin page gets a
     // tile with its sidebar label and initial.
-    const RAW = "https://raw.githubusercontent.com/Schirke/"
+    const RAW = "https://raw.githubusercontent.com/Schirke-Seanime/"
     const KNOWN: { [id: string]: { name: string, tagline: string, icon: string, order: number } } = {
       "what-to-watch": { name: "What to Watch", tagline: "Pick something for today", icon: RAW + "seanime-what-to-watch/main/src/icon.png", order: 1 },
       "anime-swipe": { name: "Anime Swipe", tagline: "Discover new anime", icon: RAW + "seanime-anime-swipe/main/src/icon.png", order: 2 },
