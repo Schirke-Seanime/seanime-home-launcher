@@ -7,6 +7,8 @@
 // click away from home. Which plugins are installed comes from Seanime's
 // local server; other plugins' pages are picked up from the sidebar.
 // Those links are then hidden from the sidebar, since the tiles replace them.
+// A plugin that Seanime couldn't load (say, an update that needs its
+// permissions approved again) gets a warning tile that opens Extensions.
 
 function init() {
   $ui.register((ctx) => {
@@ -39,6 +41,9 @@ function init() {
   .name { font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tag { font-size: 12px; color: #9a9aa6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .text { min-width: 0; }
+  .warn { border-color: rgba(255,180,60,.45); }
+  .warn .icon { filter: grayscale(1) opacity(.6); }
+  .warn .tag { color: #ffb43c; }
 </style>
 </head>
 <body>
@@ -52,7 +57,7 @@ function render(tiles) {
   row.innerHTML = (tiles || []).map(function (t) {
     var icon = t.icon ? '<img class="icon" src="' + esc(t.icon) + '" alt="">'
       : '<div class="icon letter">' + esc(String(t.name).charAt(0).toUpperCase()) + '</div>';
-    return '<div class="tile" data-id="' + esc(t.id) + '" title="' + esc(t.name) + '">' + icon +
+    return '<div class="tile' + (t.warn ? ' warn' : '') + '" data-id="' + esc(t.id) + '" title="' + esc(t.name) + '">' + icon +
       '<div class="text"><div class="name">' + esc(t.name) + '</div>' + (t.tagline ? '<div class="tag">' + esc(t.tagline) + '</div>' : '') + '</div></div>';
   }).join("");
   row.style.display = tiles && tiles.length ? "" : "none";
@@ -82,12 +87,17 @@ render([]);
 
     page.channel.on("open", (p: any) => {
       const id = p && String(p.id || "")
-      if (id) ctx.screen.navigateTo("/webview", { id })
+      if (!id) return
+      if (broken[id]) ctx.screen.navigateTo("/extensions")
+      else ctx.screen.navigateTo("/webview", { id })
     })
 
     // Installed plugins from the local server (sidebar links can sit in the unopened "More" menu); null = use the sidebar.
+    // A failed ask keeps the last good answer.
     const EXTENSIONS_API = "http://127.0.0.1:43211/api/v1/extensions/all"
     let installed: { [id: string]: boolean } | null = null
+    // Plugins Seanime couldn't load: id -> name.
+    let broken: { [id: string]: string } = {}
     async function loadInstalled() {
       try {
         const res = await fetch(EXTENSIONS_API, {
@@ -102,23 +112,27 @@ render([]);
         for (const e of (d.disabledExtensions || [])) if (e) off[typeof e === "string" ? e : e.id] = true
         const ids: { [id: string]: boolean } = {}
         for (const e of d.extensions) if (e && e.type === "plugin" && !off[e.id]) ids[e.id] = true
+        const bad: { [id: string]: string } = {}
+        for (const e of (d.invalidExtensions || [])) {
+          const x = e && e.extension
+          if (x && x.id && x.type === "plugin" && x.id !== "home-launcher" && !off[x.id]) bad[x.id] = String(x.name || x.id)
+        }
         installed = ids
+        broken = bad
       } catch (e) {
-        console.error("Home Launcher: couldn't ask Seanime for the installed plugins, using the sidebar: " + e)
-        installed = null
+        console.error("Home Launcher: couldn't ask Seanime for the installed plugins: " + e)
       }
       rebuild()
+      // The answer decides which sidebar links get hidden.
+      refresh()
     }
 
     // Plugin pages seen in the sidebar this session.
     const pages: { [id: string]: string } = {}
     function update(links: any[]) {
       for (const a of (links || [])) {
-        const href = String((a && a.attributes && a.attributes.href) || "")
-        const m = /[?&]id=([^&#]+)/.exec(href)
-        if (!m) continue
-        // The router may write search values JSON-style: id=%22anime-diary%22.
-        const id = decodeURIComponent(m[1]).replace(/^"|"$/g, "")
+        const id = linkId(a)
+        if (!id) continue
         // Elements carry their text as "text" (the type file says textContent).
         const label = String((a && (a.text || a.textContent)) || "").trim()
         if (!pages[id] || label) pages[id] = label || id
@@ -126,7 +140,11 @@ render([]);
       rebuild()
     }
 
-    // Known installed plugins first, then other plugin pages.
+    // Known installed plugins first, then other plugin pages, then the ones
+    // that failed to load. If nothing at all could be found, all known tiles
+    // are shown rather than an empty row.
+    let gaveUp = false
+    let shown: { [id: string]: boolean } = {}
     function rebuild() {
       const out: any[] = []
       for (const id in KNOWN) {
@@ -136,17 +154,42 @@ render([]);
         }
       }
       for (const id in pages) {
-        if (!KNOWN[id] && (!installed || installed[id])) out.push({ id, name: pages[id], tagline: "", icon: "", order: 100 })
+        if (!KNOWN[id] && !broken[id] && (!installed || installed[id])) out.push({ id, name: pages[id], tagline: "", icon: "", order: 100 })
+      }
+      const ok: { [id: string]: boolean } = {}
+      for (const t of out) ok[t.id] = true
+      for (const id in broken) {
+        if (ok[id]) continue
+        const k = KNOWN[id]
+        out.push({ id, name: k ? k.name : broken[id], tagline: "Needs attention, open Extensions", icon: k ? k.icon : "", order: 200, warn: true })
+      }
+      if (!out.length && !installed && gaveUp) {
+        for (const id in KNOWN) {
+          const k = KNOWN[id]
+          out.push({ id, name: k.name, tagline: k.tagline, icon: k.icon, order: k.order })
+          ok[id] = true
+        }
       }
       out.sort((x, y) => (x.order - y.order) || x.name.localeCompare(y.name))
+      shown = ok
       tiles.set(out)
     }
 
+    function linkId(a: any): string {
+      const href = String((a && a.attributes && a.attributes.href) || "")
+      const m = /[?&]id=([^&#]+)/.exec(href)
+      // The router may write search values JSON-style: id=%22anime-diary%22.
+      return m ? decodeURIComponent(m[1]).replace(/^"|"$/g, "") : ""
+    }
+
     // The launcher stands in for the plugins' sidebar links, so they're
-    // hidden. Only the link itself is styled, and only once, so hiding it
-    // doesn't set off the observer again and again.
+    // hidden, but only those with a working tile. Only the link itself is
+    // styled, and only once, so hiding it doesn't set off the observer again
+    // and again.
     function hide(links: any[]) {
       for (const a of (links || [])) {
+        const id = linkId(a)
+        if (!shown[id] || broken[id]) continue
         const style = String((a && a.attributes && a.attributes.style) || "")
         if (/display:\s*none/.test(style)) continue
         try { a.setStyle("display", "none") } catch (e) { console.error("Home Launcher: hide: " + e) }
@@ -167,8 +210,8 @@ render([]);
         ctx.dom.query(SELECTOR).then((links: any[]) => {
           refreshing = false
           if (!links) return
-          hide(links)
           update(links)
+          hide(links)
         }, () => { refreshing = false })
       }, 250)
     }
@@ -194,7 +237,8 @@ render([]);
     let tries = 0
     const stopAsking = ctx.setInterval(() => {
       const have = tiles.get()
-      if ((have && have.length && installed) || ++tries > 15) { stopAsking(); return }
+      if (have && have.length && installed) { stopAsking(); return }
+      if (++tries > 15) { stopAsking(); gaveUp = true; rebuild(); return }
       refresh()
     }, 2000)
     loadInstalled()
