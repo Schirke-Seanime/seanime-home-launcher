@@ -4,8 +4,8 @@
 
 // Home Launcher: a row of tiles on the Seanime home screen, one for each
 // plugin page in the sidebar (Anime Diary, Season Guide, ...), so they're a
-// click away from home. There's no API listing installed plugins, so it
-// watches the sidebar's links to plugin pages: tiles come and go with them.
+// click away from home. Which plugins are installed comes from Seanime's
+// local server; other plugins' pages are picked up from the sidebar.
 // Those links are then hidden from the sidebar, since the tiles replace them.
 
 function init() {
@@ -85,24 +85,58 @@ render([]);
       if (id) ctx.screen.navigateTo("/webview", { id })
     })
 
-    // Plugin pages from the sidebar's links: /webview?id=<plugin id>.
+    // Installed plugins from the local server (sidebar links can sit in the unopened "More" menu); null = use the sidebar.
+    const EXTENSIONS_API = "http://127.0.0.1:43211/api/v1/extensions/all"
+    let installed: { [id: string]: boolean } | null = null
+    async function loadInstalled() {
+      try {
+        const res = await fetch(EXTENSIONS_API, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ withUpdates: false }),
+        })
+        const j: any = await res.json()
+        const d = j && j.data
+        if (!d || !Array.isArray(d.extensions)) throw new Error("unexpected answer")
+        const off: { [id: string]: boolean } = {}
+        for (const e of (d.disabledExtensions || [])) if (e) off[typeof e === "string" ? e : e.id] = true
+        const ids: { [id: string]: boolean } = {}
+        for (const e of d.extensions) if (e && e.type === "plugin" && !off[e.id]) ids[e.id] = true
+        installed = ids
+      } catch (e) {
+        console.error("Home Launcher: couldn't ask Seanime for the installed plugins, using the sidebar: " + e)
+        installed = null
+      }
+      rebuild()
+    }
+
+    // Plugin pages seen in the sidebar this session.
+    const pages: { [id: string]: string } = {}
     function update(links: any[]) {
-      const seen: { [id: string]: boolean } = {}
-      const out: any[] = []
       for (const a of (links || [])) {
         const href = String((a && a.attributes && a.attributes.href) || "")
         const m = /[?&]id=([^&#]+)/.exec(href)
         if (!m) continue
         // The router may write search values JSON-style: id=%22anime-diary%22.
         const id = decodeURIComponent(m[1]).replace(/^"|"$/g, "")
-        if (seen[id]) continue
-        seen[id] = true
-        const k = KNOWN[id]
         // Elements carry their text as "text" (the type file says textContent).
         const label = String((a && (a.text || a.textContent)) || "").trim()
-        out.push(k
-          ? { id, name: k.name, tagline: k.tagline, icon: k.icon, order: k.order }
-          : { id, name: label || id, tagline: "", icon: "", order: 100 })
+        if (!pages[id] || label) pages[id] = label || id
+      }
+      rebuild()
+    }
+
+    // Known installed plugins first, then other plugin pages.
+    function rebuild() {
+      const out: any[] = []
+      for (const id in KNOWN) {
+        if (installed ? installed[id] : pages[id] !== undefined) {
+          const k = KNOWN[id]
+          out.push({ id, name: k.name, tagline: k.tagline, icon: k.icon, order: k.order })
+        }
+      }
+      for (const id in pages) {
+        if (!KNOWN[id] && (!installed || installed[id])) out.push({ id, name: pages[id], tagline: "", icon: "", order: 100 })
       }
       out.sort((x, y) => (x.order - y.order) || x.name.localeCompare(y.name))
       tiles.set(out)
@@ -160,11 +194,12 @@ render([]);
     let tries = 0
     const stopAsking = ctx.setInterval(() => {
       const have = tiles.get()
-      if ((have && have.length) || ++tries > 15) { stopAsking(); return }
+      if ((have && have.length && installed) || ++tries > 15) { stopAsking(); return }
       refresh()
     }, 2000)
+    loadInstalled()
     // Back on the home screen: recount, so a removed plugin's tile goes too.
-    page.onMount(() => refresh())
+    page.onMount(() => { loadInstalled(); refresh() })
 
   })
 }
